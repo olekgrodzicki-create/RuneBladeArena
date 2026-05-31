@@ -150,7 +150,7 @@
     <h1>RUNEBLADE<br>ARENA</h1>
     <p class="sub">Twin-stick arena brawler. Build your hero — Guild Wars style. Equip 8 runes, spend attribute points, survive the rooms.</p>
     <button class="btn" id="startBtn">ENTER THE ARENA</button>
-    <p class="hint">WASD / arrows · Mouse aims · Left-click fires · 1–8 cast skills · Esc pauses<br>— or use touch joysticks on mobile —</p>
+    <p class="hint" id="controlHint">Loading controls…</p>
   </div>
 
   <!-- ATTRIBUTES -->
@@ -292,24 +292,46 @@ function sfxForSkill(sk){
   (m[sk.line]||SFX.cast)();
 }
 
-//---------------- KEYBOARD / MOUSE --------------------------------
+//---------------- PLATFORM DETECTION --------------------------------
+// Detect once at load. A device is "touch-primary" if it has a touch screen
+// AND no fine pointer (mouse). Plugging in a mouse on a tablet keeps it mobile.
+// Users can override via ?pc or ?mobile in the URL.
+const _url=new URLSearchParams(location.search);
+const IS_MOBILE=_url.has('mobile')||(
+  !_url.has('pc')&&
+  ('ontouchstart' in window||navigator.maxTouchPoints>0)&&
+  !window.matchMedia('(pointer:fine)').matches
+);
+
+//---------------- PC INPUT (keyboard + mouse) ----------------------
 const keys={};
 const mouse={x:0,y:0,down:false};
-window.addEventListener('keydown',e=>{
-  keys[e.code]=true;
-  if(G.scene==='play'){
-    const n=parseInt(e.key);
-    if(n>=1&&n<=8)castSkill(n-1);
-    if(e.code==='Escape'||e.code==='KeyP'){G.scene='pause';showScreen('pause');buildPauseScreen();}
-  }else if(G.scene==='pause'){
-    if(e.code==='Escape'||e.code==='KeyP')resumeFromPause();
-  }
-  e.preventDefault();
-},{passive:false});
-window.addEventListener('keyup',e=>{keys[e.code]=false;});
-window.addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;});
-window.addEventListener('mousedown',e=>{if(e.button===0){mouse.down=true;try{getAC().resume();}catch(er){}}});
-window.addEventListener('mouseup',e=>{if(e.button===0)mouse.down=false;});
+
+if(!IS_MOBILE){
+  // Hide joystick zones entirely on PC — they would intercept mouse clicks
+  document.getElementById('moveZone').style.display='none';
+  document.getElementById('aimZone').style.display='none';
+
+  window.addEventListener('keydown',e=>{
+    keys[e.code]=true;
+    if(G.scene==='play'){
+      const n=parseInt(e.key);
+      if(n>=1&&n<=8)castSkill(n-1);
+      if(e.code==='Escape'||e.code==='KeyP'){G.scene='pause';showScreen('pause');buildPauseScreen();}
+    }else if(G.scene==='pause'){
+      if(e.code==='Escape'||e.code==='KeyP')resumeFromPause();
+    }
+    // don't preventDefault on overlay screens — allow button focus/click via Enter
+    if(G.scene==='play')e.preventDefault();
+  },{passive:false});
+  window.addEventListener('keyup',e=>{keys[e.code]=false;});
+
+  window.addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;});
+  window.addEventListener('mousedown',e=>{
+    if(e.button===0){mouse.down=true;try{getAC().resume();}catch(er){}}
+  });
+  window.addEventListener('mouseup',e=>{if(e.button===0)mouse.down=false;});
+}
 
 //---------------- SVG SKILL ICONS ---------------------------------
 // Hand-drawn SVG icons per skill - no emoji dependency
@@ -559,38 +581,57 @@ function lineScale(line){
   return{dmg:1+a*0.11, dur:1+a*0.06, cd:Math.max(0.55,1-a*0.045)};
 }
 
-//---------------- JOYSTICKS ---------------------------------------
+//---------------- MOBILE INPUT (touch joysticks) ------------------
 const sticks={move:{active:false,id:null,bx:0,by:0,dx:0,dy:0,mag:0},
               aim:{active:false,id:null,bx:0,by:0,dx:0,dy:0,mag:0}};
-function setupStick(zoneId,key){
-  const zone=document.getElementById(zoneId);
-  const base=zone.querySelector('.stick-base');
-  const knob=zone.querySelector('.stick-knob');
-  const S=sticks[key];const MAX=58;
-  function start(x,y,id){
-    S.active=true;S.id=id;S.bx=x;S.by=y;S.dx=0;S.dy=0;S.mag=0;
-    base.style.display='block';
-    base.style.left=(x-65)+'px';base.style.top=(y-65)+'px';
-    knob.style.left=(65-29)+'px';knob.style.top=(65-29)+'px';
+
+if(IS_MOBILE){
+  function setupStick(zoneId,key){
+    const zone=document.getElementById(zoneId);
+    const base=zone.querySelector('.stick-base');
+    const knob=zone.querySelector('.stick-knob');
+    const S=sticks[key];const MAX=58;
+    function start(x,y,id){
+      S.active=true;S.id=id;S.bx=x;S.by=y;S.dx=0;S.dy=0;S.mag=0;
+      base.style.display='block';
+      base.style.left=(x-65)+'px';base.style.top=(y-65)+'px';
+      knob.style.left=(65-29)+'px';knob.style.top=(65-29)+'px';
+      try{getAC().resume();}catch(er){}
+    }
+    function move(x,y){
+      let dx=x-S.bx,dy=y-S.by;const m=Math.hypot(dx,dy);
+      if(m>MAX){dx=dx/m*MAX;dy=dy/m*MAX;}
+      S.dx=dx/MAX;S.dy=dy/MAX;S.mag=Math.min(m/MAX,1);
+      knob.style.left=(65-29+dx)+'px';knob.style.top=(65-29+dy)+'px';
+    }
+    function end(){S.active=false;S.id=null;S.dx=0;S.dy=0;S.mag=0;base.style.display='none';}
+    zone.addEventListener('touchstart',e=>{
+      e.preventDefault();
+      for(const t of e.changedTouches){if(S.id===null){start(t.clientX,t.clientY,t.identifier);break;}}
+    },{passive:false});
+    zone.addEventListener('touchmove',e=>{
+      e.preventDefault();
+      for(const t of e.changedTouches){if(t.identifier===S.id)move(t.clientX,t.clientY);}
+    },{passive:false});
+    function up(e){for(const t of e.changedTouches){if(t.identifier===S.id)end();}}
+    zone.addEventListener('touchend',up);
+    zone.addEventListener('touchcancel',up);
   }
-  function move(x,y){
-    let dx=x-S.bx,dy=y-S.by;const m=Math.hypot(dx,dy);
-    if(m>MAX){dx=dx/m*MAX;dy=dy/m*MAX;}
-    S.dx=dx/MAX;S.dy=dy/MAX;S.mag=Math.min(m/MAX,1);
-    knob.style.left=(65-29+dx)+'px';knob.style.top=(65-29+dy)+'px';
-  }
-  function end(){S.active=false;S.id=null;S.dx=0;S.dy=0;S.mag=0;base.style.display='none';}
-  zone.addEventListener('touchstart',e=>{e.preventDefault();for(const t of e.changedTouches){if(S.id===null){start(t.clientX,t.clientY,t.identifier);break;}}},{passive:false});
-  zone.addEventListener('touchmove',e=>{e.preventDefault();for(const t of e.changedTouches){if(t.identifier===S.id)move(t.clientX,t.clientY);}},{passive:false});
-  function up(e){for(const t of e.changedTouches){if(t.identifier===S.id)end();}}
-  zone.addEventListener('touchend',up);zone.addEventListener('touchcancel',up);
-  zone.addEventListener('mousedown',e=>{start(e.clientX,e.clientY,'m');
-    const mm=ev=>move(ev.clientX,ev.clientY);
-    const mu=()=>{end();window.removeEventListener('mousemove',mm);window.removeEventListener('mouseup',mu);};
-    window.addEventListener('mousemove',mm);window.addEventListener('mouseup',mu);});
+  setupStick('moveZone','move');
+  setupStick('aimZone','aim');
+
+  // Pause button touch on mobile
+  document.getElementById('pauseBtn').addEventListener('touchstart',e=>{
+    e.preventDefault();
+    if(G.scene==='play'){G.scene='pause';showScreen('pause');buildPauseScreen();}
+    else if(G.scene==='pause')resumeFromPause();
+  },{passive:false});
+}else{
+  // On PC, pause button uses click (already handled by onclick below)
+  // but also hide the touch zones so they don't eat mouse events
+  document.getElementById('moveZone').style.pointerEvents='none';
+  document.getElementById('aimZone').style.pointerEvents='none';
 }
-setupStick('moveZone','move');
-setupStick('aimZone','aim');
 
 //---------------- SKILL CASTING -----------------------------------
 function castSkill(idx){
@@ -819,29 +860,47 @@ requestAnimationFrame(loop);
 
 function update(dt){
   G.time+=dt;const p=G.player;
-  // movement
-  const m=sticks.move;
+
+  // ---- movement ----
   let mdx=0,mdy=0;
-  if(keys['KeyW']||keys['ArrowUp'])mdy-=1;
-  if(keys['KeyS']||keys['ArrowDown'])mdy+=1;
-  if(keys['KeyA']||keys['ArrowLeft'])mdx-=1;
-  if(keys['KeyD']||keys['ArrowRight'])mdx+=1;
-  if(m.mag>0.12){mdx+=m.dx;mdy+=m.dy;}
+  if(IS_MOBILE){
+    // mobile: left joystick only
+    const m=sticks.move;
+    if(m.mag>0.12){mdx=m.dx;mdy=m.dy;}
+  }else{
+    // PC: WASD / arrow keys only
+    if(keys['KeyW']||keys['ArrowUp'])mdy-=1;
+    if(keys['KeyS']||keys['ArrowDown'])mdy+=1;
+    if(keys['KeyA']||keys['ArrowLeft'])mdx-=1;
+    if(keys['KeyD']||keys['ArrowRight'])mdx+=1;
+  }
   const mmag=Math.min(Math.hypot(mdx,mdy),1);
   if(mmag>0.05){
     p.moveAng=Math.atan2(mdy,mdx);p.moving=true;
     let sp=p.speed*(p.buffs.vigor?1.3:1);if(p.buffs.slow)sp*=0.55;
     p.x+=Math.cos(p.moveAng)*sp*mmag*dt;p.y+=Math.sin(p.moveAng)*sp*mmag*dt;
   }else p.moving=false;
+
   if(p.dodgeT>0){p.dodgeT-=dt;p.x+=p.dodgeVX*dt;p.y+=p.dodgeVY*dt;p.dodgeVX*=0.86;p.dodgeVY*=0.86;}
   p.x=clamp(p.x,p.r,W-p.r);p.y=clamp(p.y,p.r,H-p.r);
-  // aim
-  const a=sticks.aim;
-  if(a.mag>0.12)p.facing=Math.atan2(a.dy,a.dx);
-  else p.facing=Math.atan2(mouse.y-p.y,mouse.x-p.x);
+
+  // ---- aim & shoot ----
+  let shooting=false;
+  if(IS_MOBILE){
+    // mobile: right joystick sets aim and shoots when pushed
+    const a=sticks.aim;
+    if(a.mag>0.12)p.facing=Math.atan2(a.dy,a.dx);
+    else if(p.moving)p.facing=p.moveAng;
+    shooting=a.mag>0.55;
+  }else{
+    // PC: mouse always sets facing
+    p.facing=Math.atan2(mouse.y-p.y,mouse.x-p.x);
+    shooting=mouse.down;
+  }
+
   // basic attack
   p.atkCd-=dt;
-  if((mouse.down||a.mag>0.55)&&p.atkCd<=0){
+  if(shooting&&p.atkCd<=0){
     p.atkCd=p.atkRate*(p.buffs.vigor?0.7:1);
     const bL=['blade','pyro','frost','storm'].reduce((b,l)=>G.attr[l]>G.attr[b]?l:b,'blade');
     const bd=(10+G.attr[bL]*1.5)*p.dmgMul;
@@ -1013,8 +1072,8 @@ function render(){
   ctx.font='700 14px Cinzel';ctx.textAlign='center';
   for(const d of G.dmgText){ctx.globalAlpha=clamp(d.life/.7,0,1);ctx.fillStyle='#000';ctx.fillText(d.v,d.x+1,d.y+1);ctx.fillStyle=d.col;ctx.fillText(d.v,d.x,d.y);}
   ctx.globalAlpha=1;
-  // crosshair
-  if(G.player){const mx=mouse.x,my=mouse.y;ctx.strokeStyle='rgba(255,225,160,.75)';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(mx-10,my);ctx.lineTo(mx+10,my);ctx.stroke();ctx.beginPath();ctx.moveTo(mx,my-10);ctx.lineTo(mx,my+10);ctx.stroke();ctx.beginPath();ctx.arc(mx,my,5,0,TAU);ctx.stroke();}
+  // crosshair — PC only
+  if(!IS_MOBILE&&G.player){const mx=mouse.x,my=mouse.y;ctx.strokeStyle='rgba(255,225,160,.75)';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(mx-10,my);ctx.lineTo(mx+10,my);ctx.stroke();ctx.beginPath();ctx.moveTo(mx,my-10);ctx.lineTo(mx,my+10);ctx.stroke();ctx.beginPath();ctx.arc(mx,my,5,0,TAU);ctx.stroke();}
   ctx.restore();
 }
 function drawPlayer(p){
@@ -1209,6 +1268,7 @@ document.getElementById('fightBtn').onclick=()=>{
   showScreen(null);renderSkillbar();G._carryHP=null;startRoom();
 };
 document.getElementById('pauseBtn').onclick=()=>{
+  if(IS_MOBILE)return; // mobile uses touchstart handler wired above
   if(G.scene==='play'){G.scene='pause';showScreen('pause');buildPauseScreen();}
   else if(G.scene==='pause')resumeFromPause();
 };
@@ -1243,6 +1303,10 @@ function gameOver(){
 }
 
 showScreen('title');
+// Set control hint
+document.getElementById('controlHint').innerHTML=IS_MOBILE
+  ? '🎮 <b>Mobile</b>: Left thumb moves 00b7 Right thumb aims 0026amp; fires 00b7 Tap runes to cast<br><span style="opacity:.5;font-size:10px">Append ?pc to URL to force PC mode</span>'
+  : '2328Fe0f <b>PC</b>: WASD moves 00b7 Mouse aims 00b7 Left-click fires 00b7 120138 cast skills 00b7 Esc pauses<br><span style="opacity:.5;font-size:10px">Append ?mobile to URL to force mobile mode</span>';
 </script>
 </body>
 </html>
